@@ -1,0 +1,16 @@
+{
+  "name": "discord-prompt-bot",
+  "version": "1.0.0",
+  "description": "Discord bot that turns owner prompts in a command channel into real actions (ban, embed, react, etc.)",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test test/bot.test.js",
+    "check-intents": "node scripts/check-intents.mjs"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5"
+  }
+}
