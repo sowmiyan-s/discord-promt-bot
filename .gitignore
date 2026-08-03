@@ -50,3 +50,6 @@ Desktop.ini
 # Temporary files
 *.tmp
 *.bak
+
+# per-guild configs & memory (contains encrypted keys)
+data/

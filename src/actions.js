@@ -1,5 +1,5 @@
-// Executes structured LLM-planned actions.
 import { EmbedBuilder, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { addTask, saveButtonHandler } from './store.js';
 
 const BUTTON_STYLES = {
   primary: ButtonStyle.Primary,
@@ -225,7 +225,6 @@ export async function executeAction(action, message) {
     case 'buttonMessage': {
       const ch = await resolveChannel(action, message);
       const row = new ActionRowBuilder();
-      const handlers = new Map(); // customId -> replyText
       (action.buttons ?? []).slice(0, 5).forEach((b, i) => {
         const style = BUTTON_STYLES[b.style] ?? ButtonStyle.Primary;
         const btn = new ButtonBuilder().setLabel(b.label ?? `Button ${i + 1}`).setStyle(style);
@@ -234,50 +233,27 @@ export async function executeAction(action, message) {
         } else {
           const id = `btnmsg:${Date.now()}:${i}`;
           btn.setCustomId(id);
-          handlers.set(id, b.replyText ?? 'Thanks for clicking!');
+          saveButtonHandler(id, b.replyText ?? 'Thanks for clicking!');
         }
         row.addComponents(btn);
       });
       if (row.components.length === 0) return `⚠️ buttonMessage needs at least one button.`;
-      const sent = await ch.send({ content: action.text ?? '', components: [row] });
-      // Persistent-ish collector (24h) replying ephemerally to clickers.
-      const collector = sent.createMessageComponentCollector?.({ time: 24 * 3600 * 1000 });
-      collector?.on('collect', async (i) => {
-        await i.reply({ content: handlers.get(i.customId) ?? 'Thanks!', ephemeral: true }).catch(() => {});
-      });
+      await ch.send({ content: action.text ?? '', components: [row] });
       return `🔘 Button message posted in ${ch}`;
     }
 
     case 'roleButtons': {
       const ch = await resolveChannel(action, message);
       const row = new ActionRowBuilder();
-      const roleMap = new Map(); // customId -> role
       for (const [i, roleName] of (action.roles ?? []).slice(0, 5).entries()) {
         const role = guild.roles.cache.find(r => r.name.toLowerCase() === String(roleName).toLowerCase());
         if (!role) return `⚠️ Role "${roleName}" not found.`;
-        const id = `rolebtn:${Date.now()}:${i}`;
-        roleMap.set(id, role);
+        const id = `rolebtn:${role.id}`;
         row.addComponents(new ButtonBuilder().setCustomId(id).setLabel(role.name).setStyle(ButtonStyle.Secondary));
       }
       if (row.components.length === 0) return `⚠️ roleButtons needs at least one role.`;
-      const sent = await ch.send({ content: action.text ?? 'Pick your roles:', components: [row] });
-      const collector = sent.createMessageComponentCollector?.({ time: 7 * 24 * 3600 * 1000 });
-      collector?.on('collect', async (i) => {
-        try {
-          const role = roleMap.get(i.customId);
-          const member = await guild.members.fetch(i.user.id);
-          if (member.roles.cache.has(role.id)) {
-            await member.roles.remove(role);
-            await i.reply({ content: `➖ Removed **${role.name}**`, ephemeral: true });
-          } else {
-            await member.roles.add(role);
-            await i.reply({ content: `➕ Added **${role.name}**`, ephemeral: true });
-          }
-        } catch (e) {
-          await i.reply({ content: `⚠️ ${e.message}`, ephemeral: true }).catch(() => {});
-        }
-      });
-      return `🎭 Role-picker posted in ${ch} (${roleMap.size} roles)`;
+      await ch.send({ content: action.text ?? 'Pick your roles:', components: [row] });
+      return `🎭 Role-picker posted in ${ch} (${action.roles.length} roles)`;
     }
 
     // ---------- VOICE ----------
@@ -371,10 +347,11 @@ export async function executeAction(action, message) {
     case 'schedule': {
       const ch = await resolveChannel(action, message);
       const mins = Math.min(Math.max(action.minutes ?? 1, 1), 10080); // max 7 days
-      setTimeout(() => {
-        ch.send(action.text ?? '⏰ Reminder!').catch(() => {});
-      }, mins * 60000);
-      return `⏰ Scheduled message in ${ch} in ${mins} min. (note: lost if the bot restarts)`;
+      addTask('schedule', Date.now() + mins * 60000, {
+        channelId: ch.id,
+        text: action.text ?? '⏰ Reminder!'
+      });
+      return `⏰ Scheduled message in ${ch} in ${mins} min.`;
     }
 
     case 'giveaway': {
@@ -386,20 +363,12 @@ export async function executeAction(action, message) {
         .setColor(0xf1c40f);
       const sent = await ch.send({ embeds: [embed] });
       await sent.react('🎉');
-      setTimeout(async () => {
-        try {
-          const fresh = await ch.messages.fetch(sent.id);
-          const reaction = fresh.reactions.cache.get('🎉');
-          const users = reaction ? (await reaction.users.fetch()).filter(u => !u.bot) : null;
-          if (!users || users.size === 0) {
-            await ch.send(`🎉 Giveaway for **${action.prize}** ended — no entries.`);
-            return;
-          }
-          const winner = users.random();
-          await ch.send(`🎉 Giveaway ended! Winner of **${action.prize}**: ${winner} — congratulations!`);
-        } catch { /* channel/message gone */ }
-      }, mins * 60000);
-      return `🎉 Giveaway started in ${ch} for "${action.prize}" (${mins} min). (note: lost if the bot restarts)`;
+      addTask('giveaway', Date.now() + mins * 60000, {
+        channelId: ch.id,
+        messageId: sent.id,
+        prize: action.prize ?? 'Mystery prize'
+      });
+      return `🎉 Giveaway started in ${ch} for "${action.prize}" (${mins} min).`;
     }
 
     // ---------- CHANNELS / SERVER ----------
@@ -438,6 +407,20 @@ export async function executeAction(action, message) {
       return `📝 Topic updated in ${ch}`;
     }
 
+    case 'setChannelCategory': {
+      const ch = await resolveChannel(action, message);
+      if (!action.categoryName) {
+        await ch.setParent(null);
+        return `📂 Removed channel ${ch} from its category.`;
+      }
+      const cat = guild.channels.cache.find(
+        c => c.type === ChannelType.GuildCategory && c.name.toLowerCase() === action.categoryName.toLowerCase()
+      );
+      if (!cat) return `⚠️ Category "${action.categoryName}" not found.`;
+      await ch.setParent(cat.id);
+      return `📂 Moved channel ${ch} into category **${cat.name}**.`;
+    }
+
     case 'serverInfo': {
       const embed = new EmbedBuilder()
         .setTitle(guild.name)
@@ -449,9 +432,8 @@ export async function executeAction(action, message) {
           { name: 'Created', value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:R>`, inline: true },
           { name: 'Owner', value: `<@${guild.ownerId}>`, inline: true },
         )
-        .setColor(0x5865f2);
-      await message.channel.send({ embeds: [embed] });
-      return `ℹ️ Server info posted.`;
+        .setColor(0x2b2d31);
+      return { embeds: [embed] };
     }
 
     case 'userInfo': {
@@ -466,17 +448,15 @@ export async function executeAction(action, message) {
           { name: 'Created', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, inline: true },
           { name: 'Roles', value: member.roles.cache.filter(r => r.id !== guild.id).map(r => r.name).join(', ') || 'none' },
         )
-        .setColor(0x5865f2);
-      await message.channel.send({ embeds: [embed] });
-      return `ℹ️ User info posted.`;
+        .setColor(0x2b2d31);
+      return { embeds: [embed] };
     }
 
     case 'listBans': {
       const bans = await guild.bans.fetch();
       if (bans.size === 0) return `📋 No banned users.`;
       const list = bans.map(b => `• ${b.user.tag} (\`${b.user.id}\`) — ${b.reason ?? 'no reason'}`).slice(0, 30).join('\n');
-      await message.channel.send(`**Bans (${bans.size}):**\n${list}`);
-      return `📋 Ban list posted.`;
+      return { text: `**Bans (${bans.size}):**\n${list}` };
     }
 
     case 'createCategory': {
@@ -541,9 +521,8 @@ export async function executeAction(action, message) {
       const embed = new EmbedBuilder()
         .setTitle(`${user.tag}'s avatar`)
         .setImage(user.displayAvatarURL({ size: 1024 }))
-        .setColor(0x5865f2);
-      await message.channel.send({ embeds: [embed] });
-      return `🖼️ Avatar posted.`;
+        .setColor(0x2b2d31);
+      return { embeds: [embed] };
     }
 
     case 'listRoles': {
@@ -552,8 +531,7 @@ export async function executeAction(action, message) {
         .sort((a, b) => b.position - a.position)
         .map(r => `• ${r.name} (${r.members.size} members)`)
         .slice(0, 40);
-      await message.channel.send(`**Roles (${roles.length}):**\n${roles.join('\n') || 'none'}`);
-      return `📋 Role list posted.`;
+      return { text: `**Roles (${roles.length}):**\n${roles.join('\n') || 'none'}` };
     }
 
     case 'listChannels': {
@@ -562,22 +540,19 @@ export async function executeAction(action, message) {
         .sort((a, b) => (a.rawPosition ?? 0) - (b.rawPosition ?? 0))
         .map(c => `• ${c.type === ChannelType.GuildCategory ? '📂' : c.isVoiceBased?.() ? '🔊' : '#'} ${c.name}`)
         .slice(0, 60);
-      await message.channel.send(`**Channels (${chans.length}):**\n${chans.join('\n')}`);
-      return `📋 Channel list posted.`;
+      return { text: `**Channels (${chans.length}):**\n${chans.join('\n')}` };
     }
 
     case 'listEmojis': {
       const emojis = guild.emojis.cache.map(e => `${e} \`:${e.name}:\``).slice(0, 50);
-      await message.channel.send(emojis.length ? `**Emojis (${emojis.length}):**\n${emojis.join(' ')}` : 'No custom emojis.');
-      return `📋 Emoji list posted.`;
+      return { text: emojis.length ? `**Emojis (${emojis.length}):**\n${emojis.join(' ')}` : 'No custom emojis.' };
     }
 
     case 'listInvites': {
       const invites = await guild.invites.fetch();
       if (invites.size === 0) return `📋 No active invites.`;
       const list = invites.map(i => `• discord.gg/${i.code} — by ${i.inviter?.tag ?? '?'} (${i.uses}/${i.maxUses || '∞'} uses)`).slice(0, 25).join('\n');
-      await message.channel.send(`**Invites (${invites.size}):**\n${list}`);
-      return `📋 Invite list posted.`;
+      return { text: `**Invites (${invites.size}):**\n${list}` };
     }
 
     case 'auditLog': {
@@ -587,28 +562,53 @@ export async function executeAction(action, message) {
       const lines = log.entries.map(e =>
         `• <t:${Math.floor(e.createdTimestamp / 1000)}:R> **${e.executor?.tag ?? '?'}** → ${e.action} ${e.target?.tag ?? e.target?.name ?? ''}${e.reason ? ` (${e.reason})` : ''}`
       ).slice(0, count);
-      await message.channel.send(`**Recent audit log:**\n${lines.join('\n')}`.slice(0, 2000));
-      return `📋 Audit log posted.`;
+      return { text: `**Recent audit log:**\n${lines.join('\n')}`.slice(0, 2000) };
     }
 
     // ---------- OTHER ----------
     case 'reply':
       return action.text ?? '…';
 
+    case 'remember': {
+      const { rememberNote } = await import('./store.js');
+      rememberNote(guild?.id, action.note);
+      return `🧠 Noted: ${String(action.note).slice(0, 120)}`;
+    }
+
+    case 'forget': {
+      const { forgetNote } = await import('./store.js');
+      const n = forgetNote(guild?.id, action.match);
+      return `🧹 Forgot ${n} note(s) matching "${action.match}".`;
+    }
+
+    case 'runScript': {
+      const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+      const fn = new AsyncFunction('guild', 'message', 'client', action.code);
+      const res = await fn(guild, message, message.client);
+      return `💻 Script executed. Result: ${res !== undefined ? String(res).slice(0, 500) : 'Done'}`;
+    }
+
     default:
       return `⚠️ Unknown action type "${action.type}".`;
   }
 }
 
-// Executes a whole plan, returns array of result strings.
+// Executes a whole plan, returns array of result strings and embeds.
 export async function executePlan(plan, message) {
   const results = [];
-  for (const action of plan.actions.slice(0, 10)) {
+  const embeds = [];
+  for (const action of plan.actions.slice(0, 50)) {
     try {
-      results.push(await executeAction(action, message));
+      const res = await executeAction(action, message);
+      if (typeof res === 'string') {
+        results.push(res);
+      } else if (res && typeof res === 'object') {
+        if (res.text) results.push(res.text);
+        if (res.embeds) embeds.push(...res.embeds);
+      }
     } catch (err) {
       results.push(`❌ ${action.type} failed: ${err.message}`);
     }
   }
-  return results;
+  return { results, embeds };
 }

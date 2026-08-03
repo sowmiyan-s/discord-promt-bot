@@ -1,12 +1,25 @@
 {
   "name": "discord-prompt-bot",
   "version": "1.0.0",
-  "description": "Discord bot that turns owner prompts in a command channel into real actions (ban, embed, react, etc.)",
+  "description": "A 100% LLM-powered Discord bot capable of generating and executing dynamic automation scripts, managing long-term activities, and engaging in natural conversation.",
   "main": "src/index.js",
   "type": "module",
+  "author": "RDX SPARROW",
+  "license": "MIT",
+  "keywords": [
+    "discord",
+    "discord.js",
+    "bot",
+    "ai",
+    "llm",
+    "automation",
+    "scripting",
+    "openai",
+    "mistral"
+  ],
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test test/bot.test.js",
+    "test": "node --test test/bot.test.js test/store.test.js",
     "check-intents": "node scripts/check-intents.mjs"
   },
   "dependencies": {
