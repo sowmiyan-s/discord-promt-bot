@@ -35,10 +35,12 @@ if (!CONFIG_SECRET) {
 initCrypto(CONFIG_SECRET);
 
 // Global fallback LLM config (used when a guild hasn't set its own key).
+// Default: Groq + DeepSeek-R1-Distill-Llama-70B — free (5B tokens/day), fast (~1500 tok/s),
+// OpenAI-compatible. Get a free key at https://console.groq.com/keys
 const globalLlm = {
   apiKey: LLM_API_KEY || null,
-  baseUrl: (LLM_BASE_URL || 'https://api.mistral.ai/v1').replace(/\/$/, ''),
-  model: LLM_MODEL || 'mistral-small-latest',
+  baseUrl: (LLM_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/$/, ''),
+  model: LLM_MODEL || 'deepseek-r1-distill-llama-70b',
   temperature: LLM_TEMPERATURE != null ? Number(LLM_TEMPERATURE) : 0.4,
 };
 
@@ -181,15 +183,8 @@ async function confirmPlan(plan, message) {
 }
 
 function gatePlan(plan, tier) {
-  const privileged = tier !== 'member';
-  if (privileged) return { allowed: plan.actions, blocked: [] };
-  const allowed = [];
-  const blocked = [];
-  for (const a of plan.actions) {
-    if (isPrivilegedAction(a.type)) blocked.push(a);
-    else allowed.push(a);
-  }
-  return { allowed, blocked };
+  // Everyone can run any action — no privilege gating.
+  return { allowed: plan.actions, blocked: [] };
 }
 
 async function shouldRespond(message) {
@@ -283,6 +278,37 @@ async function runPrompt(message, promptText, tier) {
       return;
     }
 
+    // Pre-filter: strip server-only actions in DMs so the LLM doesn't waste turns on them.
+    // The LLM sometimes tries these anyway despite the system prompt warning.
+    if (!message.guild) {
+      const SERVER_ONLY = new Set([
+        'ban', 'unban', 'kick', 'timeout', 'untimeout', 'warn', 'purge', 'slowmode', 'lock', 'unlock',
+        'addRole', 'removeRole', 'createRole', 'nickname',
+        'deleteMessage', 'editBotMessage', 'announce',
+        'voiceMove', 'voiceKick', 'voiceMute', 'voiceDeafen',
+        'createThread', 'archiveThread',
+        'createChannel', 'deleteChannel', 'renameChannel', 'topic',
+        'createCategory', 'setChannelCategory', 'createInvite', 'createEmoji', 'deleteEmoji', 'createEvent', 'prune',
+        'listBans', 'listInvites', 'auditLog', 'serverInfo',
+        'schedule', 'giveaway', 'buttonMessage', 'roleButtons', 'runScript',
+      ]);
+      plan.actions = plan.actions.filter(a => {
+        if (!SERVER_ONLY.has(a.type)) return true;
+        // These work in DMs even though they touch Discord objects:
+        return ['dm', 'react', 'pin', 'unpin', 'poll', 'listRoles', 'listChannels', 'listEmojis',
+                'userInfo', 'avatar', 'remember', 'forget', 'embed', 'reply'].includes(a.type);
+      });
+    }
+
+    // Pre-filter: if the only action is deleteMessage with no resolvable ref, replace with a clarifying reply.
+    if (plan.actions.length === 1 && plan.actions[0].type === 'deleteMessage' && plan.actions[0].messageRef === 'last') {
+      const msgs = await message.channel.messages.fetch({ limit: 5 }).catch(() => []);
+      const target = msgs.filter(m => m.id !== message.id).first();
+      if (!target) {
+        plan.actions = [{ type: 'reply', text: 'I can\'t see any recent messages to delete here — try replying to a specific message or giving me a message link.' }];
+      }
+    }
+
     if (plan.confirm) {
       const approved = await confirmPlan(plan, message);
       if (!approved) {
@@ -307,7 +333,7 @@ async function runPrompt(message, promptText, tier) {
 
 // ---------- events ----------
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Default respond mode: ${defaultRespondMode}`);
   console.log(`Bot owners: ${ownerList.join(', ') || '(none — Discord permissions only)'}`);

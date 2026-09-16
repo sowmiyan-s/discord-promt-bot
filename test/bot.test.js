@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { llmPlan, needsConfirmation, describeAction } from '../src/llm.js';
 import { executeAction, executePlan } from '../src/actions.js';
+import { PermissionsBitField } from 'discord.js';
 
 // ---------- risk / confirmation logic ----------
 test('needsConfirmation: ban always risky', () => {
@@ -142,7 +143,8 @@ function makeMocks() {
     fetchAuditLogs: async () => ({ entries: new Map() }),
   };
   const message = {
-    id: 'cmd', guild, channel,
+    id: 'cmd', guild, channel, author: { id: 'cmd-author' },
+    member: { permissions: { has: (flag) => flag === PermissionsBitField.Flags.ManageMessages } },
     client: { user: { id: 'bot-id' }, users: { fetch: async id => ({ id, send: async t => calls.push(['dm', id, t]) }) } },
     reply: async t => calls.push(['reply', t]),
   };
@@ -191,7 +193,7 @@ test('executeAction: unknown type returns warning', async () => {
 test('executePlan: runs multiple actions and collects errors', async () => {
   const { message } = makeMocks();
   message.guild.members.ban = async () => { throw new Error('nope'); };
-  const results = await executePlan({ actions: [
+  const { results } = await executePlan({ actions: [
     { type: 'ban', userId: '42', reason: 'x' },
     { type: 'say', text: 'hi' },
   ] }, message);
@@ -300,12 +302,12 @@ test('llmPlan: forces confirm=true server-side for risky actions', async () => {
   assert.strictEqual(plan.confirm, true); // overridden despite LLM saying false
 });
 
-test('llmPlan: caps actions at 10', async () => {
+test('llmPlan: caps actions at 50', async () => {
   const actions = JSON.stringify(Array.from({ length: 15 }, () => ({ type: 'say', text: 'x' })));
   const mockFetch = async () => ({
     ok: true,
     json: async () => ({ choices: [{ message: { content: `{"actions":${actions}}` } }] }),
   });
-  const plan = await llmPlan('spam', '', { apiKey: 'k', baseUrl: 'https://x.test/v1', model: 'm' }, mockFetch);
-  assert.strictEqual(plan.actions.length, 10);
+  const plan = await llmPlan('spam', '', { apiKey: '***', baseUrl: 'https://x.test/v1', model: 'm' }, mockFetch);
+  assert.strictEqual(plan.actions.length, 15);
 });

@@ -1,76 +1,127 @@
-# GENBOT — 100% LLM-Powered Discord Bot
+# GENBOT — LLM-Powered Discord Bot
 
-A state-of-the-art Discord bot with a real **brain**, long-term memory, and the power of dynamic automation. Unlike traditional rule-based bots that parse `!commands`, GENBOT understands natural language intent. It doesn't just execute predefined tasks—it can **dynamically write and execute JavaScript code on the fly** to perform complex bulk server operations based on your requests. 
+A 100% LLM-powered Discord bot that generates and executes dynamic automation scripts, manages long-term activities, and engages in natural conversation. No hardcoded commands — you talk to it like a person and it takes real Discord actions.
 
-It's a genuine Discord server administrator, moderator, and conversationalist.
+## Quick Start
 
-```
-You:    "yo GENBOT, timeout @Spammer for half an hour for flooding, and post a red embed
-         in #announcements titled 'Rules Reminder' telling people to stop spamming"
+```bash
+# 1. Copy env template and fill in
+cp .env.example .env
+# Edit .env: set DISCORD_TOKEN, CONFIG_SECRET (random string), and optionally LLM_API_KEY
 
-GENBOT: ✨ Done
-        [Embed sent in #announcements]
-```
+# 2. Install
+npm install
 
-## ✨ Features
-
-- **100% LLM-Powered (`runScript`)**: GENBOT can generate raw `discord.js` scripts natively in the background to handle infinitely complex automation, restructuring, and bulk-operations. 
-  *Example: "Rename every channel in the Archive category to start with 🔒"*
-- **Persistent Long-Term Memory**: Tasks, schedules, and button interactions are saved to disk (`data/tasks.json`, `data/buttons.json`). You can ask GENBOT to schedule a message 3 weeks from now, restart your server 100 times, and the task will still execute exactly on time.
-- **Dynamic Styling**: Features a unified, cohesive, and premium dark-themed embed design out of the box (`#2b2d31`), replacing spammy duplicate messages.
-- **Talks to everyone**: @mention it, DM it, reply to it (even without a ping), or drop a message in its dedicated command channel.
-- **Personality**: Warm, witty, and concise; matches your language and energy (tunable via `LLM_TEMPERATURE`).
-- **Permission-aware & Secure**: Anyone can chat, but **only server owners/staff** can trigger moderation or destructive actions. Dangerous bulk actions will **always** trigger a red-box Confirm/Cancel preview, showing you exactly what the AI intends to do (and the code it wrote) before execution.
-
-## ⚙️ How it works
-
-```
-Any message (mention / reply / command channel)
-        │
-        ▼
-  Is the requester owner/staff?  (config OWNERS or Discord mod permissions)
-        │
-        ▼
-  LLM planner — returns { thinking, actions: [...], confirm, summary }
-        │
-        ├─ non-staff asked for a destructive action?  → politely refused
-        │
-        ├─ confirm=true (risky: runScript/ban/kick/bulkDelete/...)
-        │        │
-        │        ▼
-        │  ⚠️ Preview embed + [✅ Execute] [❌ Cancel] buttons (60s auto-cancel)
-        │
-        ▼
-  Action executor → runs each action or evaluates dynamic scripts natively
-        │
-        ▼
-  ✨ Unified Embed Result → if a step failed, results are fed back to the LLM for another pass
+# 3. Start
+npm start
 ```
 
-## 🚀 Setup
+## Architecture
 
-1. **Clone this repository**
-   ```bash
-   git clone https://github.com/rdx-sparrow/discord-prompt-bot.git
-   cd discord-prompt-bot
-   ```
+See [docs/architecture.html](docs/architecture.html) for the full system diagram (open in any browser).
 
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
+```
+Discord Gateway → discord.js Client → Event Handlers → LLM Agent Loop →
+Action Executor → Discord API
+                              ↕
+                    Persistent Store (encrypted)
+```
 
-3. **Environment Setup**
-   Copy `.env.example` to `.env` and fill it out:
-   - `DISCORD_TOKEN`: Your Discord bot token (enable Message Content, Server Members, and Presence intents).
-   - `COMMAND_CHANNEL_ID`: (Optional) The channel where the bot listens to every message without needing a ping.
-   - `LLM_API_KEY`: API key for your LLM (Mistral API recommended for top-tier JSON parsing).
-   - `LLM_MODEL`: e.g., `mistral-small-latest`.
+**Core modules:**
+- `src/index.js` — event wiring, agent loop, 9 gateway intents
+- `src/llm.js` — SYSTEM_PROMPT, JSON plan parser, risk gates (50 action types)
+- `src/actions.js` — 50 `executeAction` handlers: moderation, roles, messaging, voice, threads, channels, info, memory, runScript
+- `src/store.js` — AES-256-GCM encrypted guild config, conversation memory, scheduled tasks
+- `src/commands.js` — 6 slash command groups: /config, /welcome, /bye, /botban, /customcmd, /memory
 
-4. **Start the bot**
-   ```bash
-   npm start
-   ```
+## Features
 
-## ⚖️ License
-This project is open-source under the [MIT License](LICENSE).
+### LLM Agent Loop
+- Single efficient LLM call per step (JSON mode, any OpenAI-compatible endpoint)
+- Up to 6 retry steps with ACTION RESULTS feedback — the LLM sees what worked and what failed
+- Confirmation dialog for risky plans (ban/kick/prune/lock/@everyone)
+- Server-side risk enforcement as a belt-and-braces safety net
+- 50-action cap per plan
+
+### Role-Based Access
+- **Bot owner** — full access everywhere
+- **Server owner** — full access in their server
+- **Staff/admin** — moderation and destructive actions
+- **Member** — safe/info/chat actions only
+
+### Persistent Storage
+- Per-guild config (welcome/bye messages, custom commands, bot bans, respond mode)
+- Conversation turns (20 per channel rolling window)
+- Long-term notes (40 per server — LLM-remembered facts and job state)
+- Scheduled tasks and giveaways survive bot restarts
+- Button message handlers persist across restarts
+
+### Per-Guild LLM Keys
+- Each server can bring its own API key (encrypted at rest with AES-256-GCM)
+- Falls back to the bot's global key if not set
+- Supports any OpenAI-compatible endpoint (Mistral, OpenAI, local models)
+
+### 50 Action Types
+**Moderation:** ban, unban, kick, timeout, untimeout, warn, purge, slowmode, lock, unlock
+**Roles/Members:** addRole, removeRole, createRole, nickname
+**Messaging:** say, embed, dm, react, pin, unpin, poll, buttonMessage, roleButtons
+**Voice:** voiceMove, voiceKick, voiceMute, voiceDeafen
+**Threads:** createThread, archiveThread
+**Advanced messaging:** deleteMessage, editBotMessage, announce, schedule, giveaway
+**Channels/Server:** createChannel, deleteChannel, renameChannel, topic, createCategory, setChannelCategory, createInvite, createEmoji, deleteEmoji, createEvent, prune
+**Info/Lists:** serverInfo, userInfo, avatar, listBans, listRoles, listChannels, listEmojis, listInvites, auditLog
+**Memory:** remember, forget
+**Advanced:** runScript (dynamic discord.js code execution)
+
+## Security
+
+- `DISCORD_TOKEN` — bot token from Discord Developer Portal
+- `CONFIG_SECRET` — long random string used to derive the encryption key for per-guild API keys (min 8 chars)
+- Per-guild LLM API keys are encrypted with AES-256-GCM using a key derived from CONFIG_SECRET via scrypt
+- Without CONFIG_SECRET, stored blobs are unreadable
+- Role tiers + privileged action gates prevent members from running destructive actions
+
+## Commands
+
+### Slash Commands (admin-only unless noted)
+- `/config setkey` — set per-guild LLM API key (encrypted)
+- `/config clearkey` — remove per-guild key
+- `/config show` — show current config
+- `/config channel` — set command channel
+- `/config mode` — set respond mode (mention/all/command)
+- `/welcome set` / `/welcome off` / `/welcome test`
+- `/bye set` / `/bye off`
+- `/botban add` / `/botban remove` / `/botban list`
+- `/customcmd create` / `/customcmd delete` / `/customcmd list`
+- `/memory show` / `/memory forget` / `/memory clear`
+
+### Chat
+- `!commandname [extra]` — run a custom command (powered by LLM)
+- Mention the bot or send a message in the command channel — the LLM handles the rest
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DISCORD_TOKEN` | yes | — | Bot token |
+| `CONFIG_SECRET` | yes | — | Encryption secret (min 8 chars) |
+| `OWNER_ID` / `OWNERS` | no | — | Bot owner ID(s) |
+| `COMMAND_CHANNEL_ID` | no | — | Default command channel |
+| `LLM_API_KEY` | no | — | Global fallback LLM key |
+| `LLM_BASE_URL` | no | `https://api.mistral.ai/v1` | OpenAI-compatible endpoint |
+| `LLM_MODEL` | no | `mistral-small-latest` | Model name |
+| `LLM_TEMPERATURE` | no | `0.4` | Temperature |
+| `RESPOND_MODE` | no | `mention` | Default respond mode |
+| `MAX_STEPS` | no | `3` | Max agent loop steps (1-6) |
+
+## Running Tests
+
+```bash
+npm test
+```
+
+39 tests cover: LLM plan parsing, action execution, guild config persistence, encryption, and risk gating.
+
+## License
+
+MIT

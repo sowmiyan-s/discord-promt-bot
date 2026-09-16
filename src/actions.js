@@ -1,4 +1,4 @@
-import { EmbedBuilder, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { EmbedBuilder, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField } from 'discord.js';
 import { addTask, saveButtonHandler } from './store.js';
 
 const BUTTON_STYLES = {
@@ -97,9 +97,11 @@ export async function executeAction(action, message) {
     }
 
     case 'purge': {
-      const count = Math.min(Math.max(action.count ?? 10, 1), 100);
-      const deleted = await message.channel.bulkDelete(count + 1, true);
-      return `🧹 Deleted ${Math.max(deleted.size - 1, 0)} messages.`;
+    const count = Math.min(Math.max(action.count ?? 10, 1), 100);
+    const messages = await message.channel.messages.fetch({ limit: count + 1 });
+    const toDelete = messages.filter(m => m.author.id !== message.client.user.id && m.id !== message.id);
+    const deleted = await message.channel.bulkDelete(toDelete, true);
+    return `🧹 Deleted ${Math.max(toDelete.size, 0)} messages.`;
     }
 
     case 'slowmode': {
@@ -314,10 +316,14 @@ export async function executeAction(action, message) {
 
     // ---------- MESSAGES (advanced) ----------
     case 'deleteMessage': {
+      if (!message.guild) return `⚠️ Cannot resolve message references outside a server channel.`;
       const target = await resolveTargetMessage(action.messageRef, message);
       if (!target) return `⚠️ Target message not found.`;
-      await target.delete();
-      return `🗑️ Message deleted.`;
+      if (target.author.id === message.client.user.id || message.author.id === target.author.id || message.member?.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+        await target.delete();
+        return `🗑️ Message deleted.`;
+      }
+      return `⚠️ No permission to delete that message.`;
     }
 
     case 'editBotMessage': {
@@ -421,38 +427,41 @@ export async function executeAction(action, message) {
       return `📂 Moved channel ${ch} into category **${cat.name}**.`;
     }
 
-    case 'serverInfo': {
-      const embed = new EmbedBuilder()
-        .setTitle(guild.name)
-        .setThumbnail(guild.iconURL())
-        .addFields(
-          { name: 'Members', value: String(guild.memberCount), inline: true },
-          { name: 'Channels', value: String(guild.channels.cache.size), inline: true },
-          { name: 'Roles', value: String(guild.roles.cache.size), inline: true },
-          { name: 'Created', value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:R>`, inline: true },
-          { name: 'Owner', value: `<@${guild.ownerId}>`, inline: true },
-        )
-        .setColor(0x2b2d31);
-      return { embeds: [embed] };
-    }
-
-    case 'userInfo': {
-      const member = await guild.members.fetch(action.userId).catch(() => null);
-      if (!member) return `⚠️ User not found.`;
-      const embed = new EmbedBuilder()
-        .setTitle(member.user.tag)
-        .setThumbnail(member.user.displayAvatarURL())
-        .addFields(
-          { name: 'ID', value: member.id, inline: true },
-          { name: 'Joined', value: `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>`, inline: true },
-          { name: 'Created', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, inline: true },
-          { name: 'Roles', value: member.roles.cache.filter(r => r.id !== guild.id).map(r => r.name).join(', ') || 'none' },
-        )
-        .setColor(0x2b2d31);
-      return { embeds: [embed] };
+    case 'info': {
+      if (action.subtype === 'server') {
+        const embed = new EmbedBuilder()
+          .setTitle(guild.name)
+          .setThumbnail(guild.iconURL())
+          .addFields(
+            { name: 'Members', value: String(guild.memberCount), inline: true },
+            { name: 'Channels', value: String(guild.channels.cache.size), inline: true },
+            { name: 'Roles', value: String(guild.roles.cache.size), inline: true },
+            { name: 'Created', value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:R>`, inline: true },
+            { name: 'Owner', value: `<@${guild.ownerId}>`, inline: true },
+          )
+          .setColor(0x2b2d31);
+        return { embeds: [embed] };
+      }
+      if (action.subtype === 'user') {
+        const member = await guild.members.fetch(action.userId).catch(() => null);
+        if (!member) return `⚠️ User not found.`;
+        const embed = new EmbedBuilder()
+          .setTitle(member.user.tag)
+          .setThumbnail(member.user.displayAvatarURL())
+          .addFields(
+            { name: 'ID', value: member.id, inline: true },
+            { name: 'Joined', value: `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>`, inline: true },
+            { name: 'Created', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`, inline: true },
+            { name: 'Roles', value: member.roles.cache.filter(r => r.id !== guild.id).map(r => r.name).join(', ') || 'none' },
+          )
+          .setColor(0x2b2d31);
+        return { embeds: [embed] };
+      }
+      return `⚠️ Unknown info subtype.`;
     }
 
     case 'listBans': {
+      if (!message.guild) return `⚠️ Cannot list bans outside a server.`;
       const bans = await guild.bans.fetch();
       if (bans.size === 0) return `📋 No banned users.`;
       const list = bans.map(b => `• ${b.user.tag} (\`${b.user.id}\`) — ${b.reason ?? 'no reason'}`).slice(0, 30).join('\n');
@@ -549,6 +558,7 @@ export async function executeAction(action, message) {
     }
 
     case 'listInvites': {
+      if (!message.guild) return `⚠️ Cannot list invites outside a server.`;
       const invites = await guild.invites.fetch();
       if (invites.size === 0) return `📋 No active invites.`;
       const list = invites.map(i => `• discord.gg/${i.code} — by ${i.inviter?.tag ?? '?'} (${i.uses}/${i.maxUses || '∞'} uses)`).slice(0, 25).join('\n');
@@ -582,6 +592,7 @@ export async function executeAction(action, message) {
     }
 
     case 'runScript': {
+      if (!message.guild) return `⚠️ runScript requires a server context.`;
       const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
       const fn = new AsyncFunction('guild', 'message', 'client', action.code);
       const res = await fn(guild, message, message.client);

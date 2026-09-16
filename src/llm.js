@@ -117,7 +117,7 @@ OTHER
 - {"type":"reply","text":"..."}   (answer the owner conversationally; use for questions, chit-chat, or when no other action fits)
 
 ADVANCED AUTOMATION (LLM-Powered)
-- {"type":"runScript","code":"..."} (write dynamic discord.js code to run on the server. You have access to globals `guild` and `client`. The code is executed in an async function. Use this for ANY bulk operations, complex iterations, or dynamic logic that standard actions can't handle!)
+- {"type":"runScript","code":"..."} (write dynamic discord.js code to run on the server. You have access to globals \`guild\` and \`client\`. The code is executed in an async function. Use this for ANY bulk operations, complex iterations, or dynamic logic that standard actions can't handle!)
 
 RULES:
 1. User mentions arrive as <@123...> or <@!123...> — extract the numeric ID for "userId".
@@ -148,7 +148,15 @@ RULES:
     CONTEXT; treat them as ground truth about this server's setup and preferences.
 16. Server config that admins manage via slash commands (/config /welcome /bye /botban /customcmd):
     if someone asks to set these up by chat, walk them through it conversationally and point at the
-    matching slash command, OR gather the details and tell an admin exactly what to run.`;
+    matching slash command, OR gather the details and tell an admin exactly what to run.
+17. CONTEXT tells you if you're in a Direct Message (no guild). In DMs, ONLY safe/conversational
+    actions work: reply, info (serverInfo/userInfo/avatar won't work either — there's no server),
+    and things that don't touch Discord objects. NEVER plan server-only actions (deleteMessage,
+    moderation, roles, channels, voice, threads, polls, buttons, schedule, giveaway, etc.) in a DM —
+    instead reply explaining you need to be in a server channel to do that. If the user's request
+    clearly can't be fulfilled (e.g. "delete that message" with no resolvable message reference),
+    return a friendly reply asking for clarification rather than a failing action.
+`;
 
 export async function llmPlan(promptText, contextInfo, cfg, fetchImpl = fetch) {
   const messages = [
@@ -159,19 +167,34 @@ export async function llmPlan(promptText, contextInfo, cfg, fetchImpl = fetch) {
     },
   ];
 
-  const res = await fetchImpl(`${cfg.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: cfg.model,
-      messages,
-      temperature: cfg.temperature ?? 0.4,
-      response_format: { type: 'json_object' },
-    }),
-  });
+  // Retry with backoff on 429 rate-limit errors (min 3 attempts).
+  let res;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    res = await fetchImpl(`${cfg.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cfg.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages,
+        temperature: cfg.temperature ?? 0.4,
+        response_format: { type: 'json_object' },
+      }),
+    });
+
+    if (res.ok) break;
+
+    if (res.status === 429) {
+      const waitMs = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 500, 15000);
+      if (attempt < 4) await new Promise(r => setTimeout(r, waitMs));
+      continue;
+    }
+
+    const body = await res.text().catch(() => '');
+    throw new Error(`LLM API error ${res.status}: ${body.slice(0, 300)}`);
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');

@@ -72,6 +72,7 @@ const DEFAULT_CONFIG = () => ({
   customCommands: {},      // name -> { prompt, createdBy, createdAt }
   respondMode: null,       // per-guild override of RESPOND_MODE
   commandChannelId: null,  // per-guild command channel
+  botStatus: { type: 'playing', text: 'talk to me' }, // presence config
 });
 
 const cache = new Map(); // guildId -> config
